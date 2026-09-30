@@ -1,5 +1,4 @@
-"""
-euler_angles_visualizer.py
+"""euler_angles_visualizer.py
 
 Real-time GUI visualization of Euler Angles from BLE Orientation Data Service.
 """
@@ -31,6 +30,7 @@ class EulerAnglesVisualizer:
         self.pair = pair
         self.macos_use_bdaddr = macos_use_bdaddr
         self.debug = debug
+
         self.service = BLEOrientationService(on_data_callback=self._on_ble_data)
 
         # Reference pose for relative angle calculation
@@ -45,7 +45,6 @@ class EulerAnglesVisualizer:
 
         # Thread-safe queue for BLE → Tk data transfer
         self._data_queue: queue.Queue[OrientationData] = queue.Queue()
-
         self._ble_thread: Optional[threading.Thread] = None
         self._ble_loop: Optional[asyncio.AbstractEventLoop] = None
         self.closing = False
@@ -56,13 +55,11 @@ class EulerAnglesVisualizer:
         self.root.resizable(False, False)
         self.root.geometry("1280x250")
         self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
-
         self._setup_ui()
 
     # ------------------------------------------------------------------
     # UI
     # ------------------------------------------------------------------
-
     def _setup_ui(self) -> None:
         """Setup UI components."""
         # Zeroed angle display
@@ -98,7 +95,6 @@ class EulerAnglesVisualizer:
         # Buttons frame
         button_frame = tk.Frame(self.root)
         button_frame.pack(padx=10, pady=(10, 10), fill=tk.X)
-
         tk.Button(
             button_frame,
             text="⟳ Zero / Set Reference",
@@ -107,7 +103,6 @@ class EulerAnglesVisualizer:
             bg="lightgreen",
             width=20,
         ).pack(side=tk.LEFT, padx=5)
-
         tk.Button(
             button_frame,
             text="Exit",
@@ -119,32 +114,27 @@ class EulerAnglesVisualizer:
 
     def _zero_reference(self) -> None:
         """Set current orientation as the reference pose."""
-        shown_roll, shown_pitch, shown_yaw = self._relative_angles()
-
+        # FIX: capture the raw baseline first, then display exactly those values.
         self.reference_roll = self.current_roll
         self.reference_pitch = self.current_pitch
         self.reference_yaw = self.current_yaw
         self.ref_var.set(
-            f"Reference: Roll={shown_roll:+.2f}°  "
-            f"Pitch={shown_pitch:+.2f}°  "
-            f"Yaw={shown_yaw:+.2f}°"
+            f"Reference: Roll={self.reference_roll:+.2f}°  "
+            f"Pitch={self.reference_pitch:+.2f}°  "
+            f"Yaw={self.reference_yaw:+.2f}°"
         )
         logging.info(
-            f"Reference set at shown readings: R={shown_roll:.2f}° "
-            f"P={shown_pitch:.2f}° Y={shown_yaw:.2f}° "
-            f"(raw baseline: R={self.reference_roll:.2f}° "
-            f"P={self.reference_pitch:.2f}° Y={self.reference_yaw:.2f}°)"
+            f"Reference set at raw baseline: R={self.reference_roll:.2f}° "
+            f"P={self.reference_pitch:.2f}° Y={self.reference_yaw:.2f}°"
         )
         self._update_readings()
 
     # ------------------------------------------------------------------
     # Tk-side update loops
     # ------------------------------------------------------------------
-
     def _drain_queue(self) -> None:
         """
         Drain the thread-safe data queue on the Tk thread.
-
         Called frequently via root.after(). Consumes all pending
         OrientationData frames produced by the BLE background thread,
         updating current_* attributes for the display loop to read.
@@ -158,16 +148,22 @@ class EulerAnglesVisualizer:
                     )
         except queue.Empty:
             pass
-
         if not self.closing:
             self.root.after(20, self._drain_queue)
 
+    @staticmethod
+    def _wrap(angle: float) -> float:
+        """FIX: add angle wrapping functionality for normalizing an angle to (-180, 180]."""
+        return (angle + 180.0) % 360.0 - 180.0
+
     def _relative_angles(self) -> tuple[float, float, float]:
         """Return current Euler readings offset by the captured reference."""
+        # FIX: wrap each difference — (current - reference) can legitimately
+        # exceed ±180°, which previously displayed as e.g. +358° instead of -2°.
         return (
-            self.current_roll - self.reference_roll,
-            self.current_pitch - self.reference_pitch,
-            self.current_yaw - self.reference_yaw,
+            self._wrap(self.current_roll - self.reference_roll),
+            self._wrap(self.current_pitch - self.reference_pitch),
+            self._wrap(self.current_yaw - self.reference_yaw),
         )
 
     def _update_readings(self) -> None:
@@ -186,18 +182,15 @@ class EulerAnglesVisualizer:
             self.status_var.set(f"Status: {status}")
         except Exception as e:
             logging.error(f"Error updating display: {e}")
-
         if not self.closing:
             self.root.after(20, self._update_display)
 
     # ------------------------------------------------------------------
     # BLE background thread
     # ------------------------------------------------------------------
-
     def _on_ble_data(self, data: OrientationData) -> None:
         """
         BLE callback — runs on the background asyncio thread.
-
         Enqueues the received OrientationData frame for consumption
         by _drain_queue() on the Tk thread, avoiding any direct
         cross-thread Tk widget access.
@@ -224,16 +217,12 @@ class EulerAnglesVisualizer:
             if not device:
                 logging.error("Failed to find device.")
                 return
-
             timeout = 60.0 if self.pair else 30.0
             if not await self.service.connect(device, pair=self.pair, timeout=timeout):
                 logging.error("Failed to connect to device.")
                 return
-
             logging.info("Connected to BLE device.")
-
             await self.service.start_polling()
-
         except asyncio.CancelledError:
             logging.info("BLE loop cancelled.")
         except Exception as e:
@@ -244,7 +233,6 @@ class EulerAnglesVisualizer:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-
     def _shutdown_ble(self) -> None:
         """Signal the BLE thread to stop and block until it joins."""
         if self._ble_loop and not self._ble_loop.is_closed():
@@ -267,7 +255,6 @@ class EulerAnglesVisualizer:
             level=logging.DEBUG if self.debug else logging.INFO,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
-
         # Launch BLE work on a dedicated background thread so that
         # CoreBluetooth delegate callbacks are never starved by Tk's
         # main-thread event dispatch.
@@ -280,7 +267,6 @@ class EulerAnglesVisualizer:
         # Start Tk-side periodic loops
         self._drain_queue()
         self._update_display()
-
         try:
             self.root.mainloop()
         finally:
@@ -292,7 +278,6 @@ class EulerAnglesVisualizer:
 # ----------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Real-time Euler Angles Visualizer from BLE Device"
@@ -322,12 +307,9 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable verbose BLE/debug logging.",
     )
-
     args = parser.parse_args()
-
     if not args.address and not args.name:
         parser.error("Either --address or --name must be provided.")
-
     app = EulerAnglesVisualizer(
         address=args.address,
         name=args.name,
